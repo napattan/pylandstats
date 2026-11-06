@@ -1152,6 +1152,11 @@ class TestZonaAlnalysis(unittest.TestCase):
             zone_width=zone_width,
             zone_height=zone_height,
         )
+        grid_boxes = pls.ZonalGridAnalysis._get_grid_gser(
+            (0, 0, 200, 200), None, None, 100, 100, None
+        )
+        self.assertEqual(len(grid_boxes), 4)
+        self.assertEqual(grid_boxes[0].bounds, (0.0, 100.0, 100.0, 200.0))
 
         # test that init must provide one arg for each dimension (i.e,
         # `num_zone_cols`/`zone_width` and `num_zone_rows`/`zone_height`)
@@ -1273,6 +1278,42 @@ class TestSpatioTemporalZonalAnalysis(unittest.TestCase):
             )
             for ls in stza.landscape_ser:
                 self.assertEqual(ls.neighborhood_rule, neighborhood_rule)
+
+        # test that `SpatioTemporalZonalAnalysis` passes raster `nodata` to each
+        # `Landscape` (matching `ZonalAnalysis` `present_classes` and `total_area`)
+        # and defaults `zone_nodata=0` for integer label arrays
+        label_arr = np.load(
+            path.join(tests_data_dir, "label_arr.npy"), allow_pickle=True
+        )
+        za_0 = pls.ZonalAnalysis(self.landscape_fps[0], label_arr)
+        za_1 = pls.ZonalAnalysis(self.landscape_fps[1], label_arr)
+        stza_arr = pls.SpatioTemporalZonalAnalysis(
+            self.landscape_fps, label_arr, dates=self.dates
+        )
+        self.assertTrue((stza_arr.zone_gser.index == za_0.zone_gser.index).all())
+        self.assertTrue(
+            np.array_equal(
+                stza_arr.present_classes,
+                np.union1d(za_0.present_classes, za_1.present_classes),
+            )
+        )
+        with rio.open(self.landscape_fps[0]) as src:
+            self.assertNotIn(src.nodata, stza_arr.present_classes)
+        stza_ta = stza_arr.compute_landscape_metrics_df(metrics=["total_area"])
+        za_0_ta = za_0.compute_landscape_metrics_df(metrics=["total_area"])
+        za_1_ta = za_1.compute_landscape_metrics_df(metrics=["total_area"])
+        self.assertTrue(
+            np.allclose(
+                stza_ta.xs(self.dates[0], level="date")["total_area"],
+                za_0_ta["total_area"],
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                stza_ta.xs(self.dates[1], level="date")["total_area"],
+                za_1_ta["total_area"],
+            )
+        )
 
     def test_dataframes(self):
         for _class, init_args, init_kwargs, _ in self.init_combinations:

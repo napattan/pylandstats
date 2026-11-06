@@ -146,7 +146,7 @@ class SpatioTemporalZonalAnalysis(SpatioTemporalAnalysis, zonal.ZonalAnalysis):
         zones,
         *,
         zone_index=None,
-        zone_nodata=None,
+        zone_nodata=0,
         dates=None,
         neighborhood_rule=None,
     ):
@@ -203,20 +203,22 @@ class SpatioTemporalZonalAnalysis(SpatioTemporalAnalysis, zonal.ZonalAnalysis):
         # current `SpatioTemporalZonalAnalysis`, so we need to do it here
         self.zone_gser = za.zone_gser
 
-        # init the landscape instances
-        landscapes = []
-        for _, zone_geom in za.zone_gser.items():
-            for landscape in landscape_filepaths:
-                with rio.open(landscape) as src:
+        # init the landscape instances, reusing the `t=0` landscapes from `za`
+        zone_landscapes = [[ls] for ls in za.landscape_ser]
+        for landscape in landscape_filepaths[1:]:
+            with rio.open(landscape) as src:
+                for zone_ls, zone_geom in zip(zone_landscapes, za.zone_gser):
                     zone_arr, zone_transform = mask.mask(src, [zone_geom], crop=True)
-                    landscapes.append(
+                    zone_ls.append(
                         Landscape(
                             zone_arr[0],
                             res=src.res,
+                            nodata=src.nodata,
                             transform=zone_transform,
                             neighborhood_rule=neighborhood_rule,
                         )
                     )
+        landscapes = [ls for zone_ls in zone_landscapes for ls in zone_ls]
 
         # TODO: DRY this from `SpatioTemporalAnalysis.__init__`
         if dates is None:

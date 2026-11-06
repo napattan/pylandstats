@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio as rio
+import shapely
 from rasterio import features, mask
 from shapely import geometry
 from shapely.geometry import base as geometry_base
@@ -472,14 +473,12 @@ class ZonalGridAnalysis(ZonalAnalysis):
         # vectorize the grid as a geo series
         flat_grid_x = grid_x.flatten()
         flat_grid_y = grid_y.flatten()
-        zones = pd.DataFrame(
-            {
-                "xmin": flat_grid_x,
-                "ymin": flat_grid_y - zone_height,
-                "xmax": flat_grid_x + zone_width,
-                "ymax": flat_grid_y,
-            }
-        ).apply(lambda row: geometry.box(*row), axis=1)
+        zones = shapely.box(
+            flat_grid_x,
+            flat_grid_y - zone_height,
+            flat_grid_x + zone_width,
+            flat_grid_y,
+        )
 
         # # identify zones as their (row, col) position
         # zone_ids = np.array(
