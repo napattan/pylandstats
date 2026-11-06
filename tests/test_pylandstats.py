@@ -226,7 +226,33 @@ class TestLandscape(unittest.TestCase):
         self.assertTrue((ls.perimeter()["perimeter"] > 0).all())
         self.assertTrue((ls.perimeter_area_ratio()["perimeter_area_ratio"] > 0).all())
         self.assertTrue((ls.shape_index()["shape_index"] >= 1).all())
-        _fractal_dimension_ser = ls.fractal_dimension()["fractal_dimension"]
+        frac_df = ls.fractal_dimension()
+        self.assertTrue((frac_df["class_val"] == ls._patch_class_ser).all())
+        _fractal_dimension_ser = frac_df["fractal_dimension"]
+        # test `compute_core_label_arr` and `core_area` with `count_boundary=True`
+        # including when all pixels are core (no 0 background label in core_label_arr)
+        uniform_ls = pls.Landscape(np.ones((4, 4), dtype=int), res=(1, 1))
+        self.assertEqual(
+            uniform_ls.core_area(hectares=False, count_boundary=True)["core_area"].iloc[
+                0
+            ],
+            16,
+        )
+        self.assertEqual(
+            uniform_ls.core_area(hectares=False, count_boundary=False)[
+                "core_area"
+            ].iloc[0],
+            4,
+        )
+        self.assertEqual(
+            uniform_ls.number_of_core_areas(count_boundary=True)[
+                "number_of_core_areas"
+            ].iloc[0],
+            1,
+        )
+        self.assertEqual(
+            len(ls.compute_patch_perimeters(np.zeros((3, 3), dtype=int))), 0
+        )
         self.assertTrue((_fractal_dimension_ser <= 2).all())
         # ACHTUNG: ugly hardcoded tolerance to correct for mysterious errors in GitHub
         # Actions with some Python versions

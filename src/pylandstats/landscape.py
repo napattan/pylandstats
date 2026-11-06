@@ -55,19 +55,16 @@ def compute_core_label_arr(label_arr, count_boundary, edge_depth):
     core_label_arr : numpy.ndarray
         An integer raster of core areas only where each patch has a unique label.
     """
-    if not count_boundary:
-        label_arr = np.pad(label_arr, 1, mode="constant", constant_values=0)
-
     # ACHTUNG: we use the 4-neighborhood kernel to compute the core areas (this is how
     # it is done in FRAGSTATS/landscapemetrics)
-    return np.where(
+    return (
         ndimage.binary_erosion(
             label_arr,
             structure=NEIGHBORHOOD_KERNEL_DICT["4"],
             iterations=edge_depth,
-        ),
-        label_arr,
-        0,
+            border_value=bool(count_boundary),
+        )
+        * label_arr
     )
 
 
@@ -328,32 +325,24 @@ class Landscape:
         patch_perimeters : numpy.ndarray
             One-dimensional array with the perimeter of each patch.
         """
-        # NOTE: performance comparison of `patch_perimeters` as np.array of fixed size
-        # with `patch_perimeters[i] = ...` within the loop is slower and less Pythonic
-        # but can lead to better performances if optimized via Cython/numba
-        patch_perimeters = []
-        # `ndimage.find_objects` only finds the (rectangular) bounds; there might be
-        # parts of other patches within such bounds, so we need to check which pixels
-        # correspond to the patch of interest. Since `ndimage.label` labels patches with
-        # an enumeration starting by 1, we can use Python's built-in `enumerate`.
-        # NOTE: feature-wise iteration could this be done with
-        # `ndimage.labeled_comprehension(
-        #     label_arr, label_arr, np.arange(1, num_patches + 1),
-        #     _compute_arr_perimeter, np.float, default=None)`
-        # ?
-        # I suspect no, because each feature array is flattened, which does not allow
-        # for the computation of the perimeter or other shape metrics
-        for i, patch_slice in enumerate(ndimage.find_objects(label_arr), start=1):
-            patch_arr = np.pad(
-                label_arr[patch_slice] == i,
-                pad_width=1,
-                mode="constant",
-                constant_values=False,
-            )  # self.nodata
-
-            patch_perimeters.append(self.compute_arr_perimeter(patch_arr))
-
-        return patch_perimeters
+        num_patches = int(np.max(label_arr))
+        if num_patches < 1:
+            return np.empty(0, dtype=float)
+        v_diff = label_arr[1:, :] != label_arr[:-1, :]
+        h_edges = (
+            np.bincount(label_arr[0, :], minlength=num_patches + 1)[1:]
+            + np.bincount(label_arr[-1, :], minlength=num_patches + 1)[1:]
+            + np.bincount(label_arr[:-1, :][v_diff], minlength=num_patches + 1)[1:]
+            + np.bincount(label_arr[1:, :][v_diff], minlength=num_patches + 1)[1:]
+        )
+        h_diff = label_arr[:, 1:] != label_arr[:, :-1]
+        v_edges = (
+            np.bincount(label_arr[:, 0], minlength=num_patches + 1)[1:]
+            + np.bincount(label_arr[:, -1], minlength=num_patches + 1)[1:]
+            + np.bincount(label_arr[:, :-1][h_diff], minlength=num_patches + 1)[1:]
+            + np.bincount(label_arr[:, 1:][h_diff], minlength=num_patches + 1)[1:]
+        )
+        return h_edges * self.cell_width + v_edges * self.cell_height
 
     def compute_patch_euclidean_nearest_neighbor(self, label_arr):
         """Compute the ENN distance of each patch in a labeled patch array.
@@ -1033,7 +1022,7 @@ class Landscape:
         if class_val is None:
             return pd.DataFrame(
                 {
-                    "class_val": self._patch_area_ser,
+                    "class_val": self._patch_class_ser,
                     "fractal_dimension": fractal_dimension_ser,
                 }
             )
@@ -1093,30 +1082,12 @@ class Landscape:
             patch shapes are simplified.
         """
 
-        def compute_patch_core_areas(label_arr):
+        def compute_patch_core_areas(label_arr, num_patches):
             """Compute patch core area, in number of cells."""
-            # we cannot use `self.compute_patch_areas` as in the commented lines below
-            # because it would return the areas of the core patches only, which are not
-            # necessarily aligned with the original patches, therefore we would have no
-            # way of matching the core areas with the original patches
-            # core_label_arr = compute_core_label_arr(
-            #     label_arr, count_boundary, edge_depth
-            # )
-            # return self.compute_patch_areas(core_label_arr)
-            # instead, we use the labels of `label_arr` to identify the core patches and
-            # ACHTUNG: important to drop the 0 label as it corresponds to the background
-            core_area_ser = (
-                pd.Series(
-                    compute_core_label_arr(
-                        label_arr, count_boundary, edge_depth
-                    ).ravel()
-                )
-                .value_counts()
-                .drop(0)
+            core_label_arr = compute_core_label_arr(
+                label_arr, count_boundary, edge_depth
             )
-            core_areas = np.zeros(label_arr.max(), dtype=core_area_ser.dtype)
-            core_areas[core_area_ser.index - 1] = core_area_ser.values
-            return core_areas
+            return np.bincount(core_label_arr.ravel(), minlength=num_patches + 1)[1:]
 
         cell_area = self.cell_area
 
@@ -1129,7 +1100,7 @@ class Landscape:
                     "class_val": self._patch_class_ser,
                     "core_area": np.concatenate(
                         [
-                            compute_patch_core_areas(self.class_label(class_val)[0])
+                            compute_patch_core_areas(*self.class_label(class_val))
                             for class_val in self.classes
                         ]
                     )
@@ -1138,7 +1109,7 @@ class Landscape:
             )
         else:
             return pd.Series(
-                compute_patch_core_areas(self.class_label(class_val)[0]) * cell_area,
+                compute_patch_core_areas(*self.class_label(class_val)) * cell_area,
                 name="core_area",
             )
 
@@ -1171,30 +1142,18 @@ class Landscape:
         structure = NEIGHBORHOOD_KERNEL_DICT[self.neighborhood_rule]
 
         def _class_ncore_areas(class_val):
-            label_arr = self.class_label(class_val)[0]
+            label_arr, num_patches = self.class_label(class_val)
             core_label_arr = compute_core_label_arr(
                 label_arr,
                 count_boundary,
                 edge_depth,
             )
-
-            def _num_patches(i, patch_slice):
-                try:
-                    return ndimage.label(
-                        core_label_arr[patch_slice] == i,
-                        structure=structure,
-                    )[1]
-                except RuntimeError:
-                    return 0
-
-            # ACHTUNG: note that we need to find the objects in the label array (not the
-            # core label array) because the core label array is not necessarily aligned
-            return [
-                _num_patches(i, patch_slice)
-                for i, patch_slice in enumerate(
-                    ndimage.find_objects(label_arr), start=1
-                )
-            ]
+            disjunct_arr, num_cores = ndimage.label(
+                core_label_arr != 0, structure=structure
+            )
+            core_to_patch = np.empty(num_cores + 1, dtype=label_arr.dtype)
+            core_to_patch[disjunct_arr] = core_label_arr
+            return np.bincount(core_to_patch[1:], minlength=num_patches + 1)[1:]
 
         if class_val is None:
             return pd.DataFrame(
